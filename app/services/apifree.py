@@ -1,82 +1,87 @@
-import os
-import time
-import requests
+import httpx
+import asyncio
+from app.config import settings
 
-API_KEY = os.getenv("APIFREE_API_KEY")
-BASE_URL = "https://api.skycoding.ai"
+API_URL = "https://api.apifree.ai/v1/inference"
 
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
+
+async def _submit(model: str, payload: dict):
+    headers = {
+        "Authorization": f"Bearer {settings.APIFREE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(API_URL, headers=headers, json={
+            "model": model,
+            "input": payload
+        })
+        return r.json()
+
+
+async def _wait_result(task_id: str):
+    headers = {"Authorization": f"Bearer {settings.APIFREE_API_KEY}"}
+    url = f"https://api.apifree.ai/v1/task/{task_id}"
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        for _ in range(40):  # ждать до ~40 сек
+            r = await client.get(url, headers=headers)
+            data = r.json()
+
+            if data.get("status") == "succeeded":
+                return data["output"]
+
+            if data.get("status") == "failed":
+                return None
+
+            await asyncio.sleep(1)
+
+    return None
+
 
 # ---------- IMAGE ----------
-def generate_image(image_url, prompt, model="google/nano-banana-pro/edit"):
-    payload = {
-        "model": model,
-        "image": image_url,
-        "prompt": prompt,
-        "aspect_ratio": "1:1",
-        "resolution": "1K"
-    }
 
-    r = requests.post(f"{BASE_URL}/v1/image/submit", headers=headers, json=payload)
-    data = r.json()
+async def generate_image(prompt: str):
+    submit = await _submit(
+        settings.APIFREE_IMAGE_MODEL,
+        {"prompt": prompt}
+    )
 
-    if data.get("code") != 200:
-        raise Exception(data)
+    task_id = submit.get("task_id")
+    if not task_id:
+        return None
 
-    request_id = data["resp_data"]["request_id"]
+    result = await _wait_result(task_id)
+    if not result:
+        return None
 
-    while True:
-        time.sleep(2)
-        r = requests.get(f"{BASE_URL}/v1/image/{request_id}/result", headers=headers)
-        d = r.json()
-
-        if d["resp_data"]["status"] == "success":
-            return d["resp_data"]["image_list"][0]
+    return result.get("url")
 
 
 # ---------- VIDEO ----------
-def generate_video(image_url, prompt, model="klingai/kling-v2.6/pro/image-to-video"):
-    payload = {
-        "model": model,
-        "image": image_url,
-        "prompt": prompt,
-        "duration": 5
-    }
 
-    r = requests.post(f"{BASE_URL}/v1/video/submit", headers=headers, json=payload)
-    data = r.json()
+async def generate_video(prompt: str):
+    submit = await _submit(
+        settings.APIFREE_VIDEO_MODEL,
+        {"prompt": prompt}
+    )
 
-    if data.get("code") != 200:
-        raise Exception(data)
+    task_id = submit.get("task_id")
+    if not task_id:
+        return None
 
-    request_id = data["resp_data"]["request_id"]
+    result = await _wait_result(task_id)
+    if not result:
+        return None
 
-    while True:
-        time.sleep(5)
-        r = requests.get(f"{BASE_URL}/v1/video/{request_id}/status", headers=headers)
-        d = r.json()
-
-        if d["resp_data"]["status"] == "success":
-            break
-
-    r = requests.get(f"{BASE_URL}/v1/video/{request_id}/result", headers=headers)
-    d = r.json()
-
-    return d["resp_data"]["video_list"][0]
+    return result.get("url")
 
 
 # ---------- CHAT ----------
-def chat_gpt(message, model="openai/gpt-5.2"):
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": message}],
-        "max_tokens": 4096
-    }
 
-    r = requests.post(f"{BASE_URL}/v1/chat/completions", headers=headers, json=payload)
-    data = r.json()
+async def chat_gpt(message: str):
+    submit = await _submit(
+        settings.APIFREE_CHAT_MODEL,
+        {"messages": [{"role": "user", "content": message}]}
+    )
 
-    return data["choices"][0]["message"]["content"]
+    return submit.get("output", "")
