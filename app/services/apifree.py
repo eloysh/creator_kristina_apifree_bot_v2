@@ -40,8 +40,10 @@ async def _wait_result(task_id: str):
             if data.get("status") == "succeeded":
                 return data["output"]
 
-            if data.get("status") == "failed":
-                return None
+            if data.get("status") == "succeeded":
+    output = data.get("output") or {}
+    return output
+
 
             await asyncio.sleep(1)
 
