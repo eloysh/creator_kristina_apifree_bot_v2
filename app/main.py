@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.services.apifree import generate_image, generate_video, chat_gpt
 
 import os
 from fastapi import FastAPI, Request, HTTPException
