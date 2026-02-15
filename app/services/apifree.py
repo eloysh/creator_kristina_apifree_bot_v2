@@ -10,12 +10,22 @@ async def _submit(model: str, payload: dict):
         "Authorization": f"Bearer {settings.APIFREE_API_KEY}",
         "Content-Type": "application/json",
     }
+
     async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(API_URL, headers=headers, json={
-            "model": model,
-            "input": payload
-        })
-        return r.json()
+        r = await client.post(
+            "https://api.apifree.ai/v1/inference",
+            headers=headers,
+            json={"model": model, "input": payload},
+        )
+
+        data = r.json()
+        print("API SUBMIT RESPONSE:", data)   
+
+        # ApiFree может вернуть id вместо task_id
+        task_id = data.get("task_id") or data.get("id")
+
+        return {"task_id": task_id}
+
 
 
 async def _wait_result(task_id: str):
