@@ -1,99 +1,64 @@
-import httpx
+from __future__ import annotations
+
 import asyncio
-from app.config import settings
+from typing import Any, Dict, Optional
 
-API_URL = "https://api.apifree.ai/v1/inference"
-
-
-async def _submit(model: str, payload: dict):
-    headers = {
-        "Authorization": f"Bearer {settings.APIFREE_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(
-            "https://api.apifree.ai/v1/inference",
-            headers=headers,
-            json={"model": model, "input": payload},
-        )
-
-        data = r.json()
-        print("API SUBMIT RESPONSE:", data)   
-
-        # ApiFree может вернуть id вместо task_id
-        task_id = data.get("task_id") or data.get("id")
-
-        return {"task_id": task_id}
+import httpx
 
 
+class ApiFreeService:
+    """
+    Примерная обёртка. Подстрой под реальные урлы/поля ApiFree.
+    Главная идея: submit -> task_id, затем polling -> итоговый url.
+    """
 
-async def _wait_result(task_id: str):
-    headers = {"Authorization": f"Bearer {settings.APIFREE_API_KEY}"}
-    url = f"https://api.apifree.ai/v1/task/{task_id}"
+    def __init__(self, base_url: str, api_key: Optional[str] = None):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        for _ in range(40):  # ждать до ~40 сек
-            r = await client.get(url, headers=headers)
-            data = r.json()
+    def _headers(self) -> Dict[str, str]:
+        h: Dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
 
-            if data.get("status") == "succeeded":
-                return data["output"]
+    async def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(f"{self.base_url}{path}", json=payload, headers=self._headers())
+            r.raise_for_status()
+            return r.json()
 
-            if data.get("status") == "succeeded":
-    output = data.get("output") or {}
-    return output
+    async def _get(self, path: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.get(f"{self.base_url}{path}", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
 
+    async def submit_image(self, prompt: str) -> str:
+        data = await self._post("/image/submit", {"prompt": prompt})
+        # Подстрой под ApiFree: task_id / id / result.id
+        task_id = data.get("task_id") or data.get("id") or (data.get("result") or {}).get("id")
+        if not task_id:
+            raise RuntimeError(f"ApiFree image submit: no task id in response: {data}")
+        return str(task_id)
 
-            await asyncio.sleep(1)
+    async def get_image_result(self, task_id: str) -> Dict[str, Any]:
+        # Подстрой под ApiFree
+        return await self._get(f"/image/result/{task_id}")
 
-    return None
+    async def wait_image_url(self, task_id: str, timeout_sec: int = 180) -> str:
+        t = 0
+        while t < timeout_sec:
+            res = await self.get_image_result(task_id)
+            status = (res.get("status") or res.get("state") or "").lower()
+            if status in ("done", "succeeded", "success", "completed"):
+                url = res.get("url") or (res.get("result") or {}).get("url")
+                if not url:
+                    raise RuntimeError(f"ApiFree image done but no url: {res}")
+                return url
+            if status in ("failed", "error"):
+                raise RuntimeError(f"ApiFree image failed: {res}")
+            await asyncio.sleep(2)
+            t += 2
+        raise TimeoutError("ApiFree image timeout")
 
-
-# ---------- IMAGE ----------
-
-async def generate_image(prompt: str):
-    submit = await _submit(
-        settings.APIFREE_IMAGE_MODEL,
-        {"prompt": prompt}
-    )
-
-    task_id = submit.get("task_id")
-    if not task_id:
-        return None
-
-    result = await _wait_result(task_id)
-    if not result:
-        return None
-
-    return result.get("url")
-
-
-# ---------- VIDEO ----------
-
-async def generate_video(prompt: str):
-    submit = await _submit(
-        settings.APIFREE_VIDEO_MODEL,
-        {"prompt": prompt}
-    )
-
-    task_id = submit.get("task_id")
-    if not task_id:
-        return None
-
-    result = await _wait_result(task_id)
-    if not result:
-        return None
-
-    return result.get("url")
-
-
-# ---------- CHAT ----------
-
-async def chat_gpt(message: str):
-    submit = await _submit(
-        settings.APIFREE_CHAT_MODEL,
-        {"messages": [{"role": "user", "content": message}]}
-    )
-
-    return submit.get("output", "")
