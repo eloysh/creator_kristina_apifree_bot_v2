@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Creator_Kristina.ai — Mini App</title>
+  <style>
+    :root { --bg:#0b0f14; --card:#121826; --muted:#94a3b8; --txt:#e5e7eb; --accent:#7c3aed; }
+    body{ margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:var(--bg); color:var(--txt); }
+    header{ padding:16px; background:linear-gradient(135deg,#111827,#0b0f14); position:sticky; top:0; border-bottom:1px solid #1f2937;}
+    h1{ font-size:16px; margin:0; }
+    .wrap{ padding:16px; max-width:720px; margin:0 auto; }
+    .tabs{ display:flex; gap:8px; margin:12px 0 16px; }
+    .tab{ flex:1; padding:10px 12px; border:1px solid #1f2937; background:var(--card); color:var(--txt); border-radius:12px; cursor:pointer; }
+    .tab.active{ border-color:var(--accent); box-shadow:0 0 0 2px rgba(124,58,237,.25) inset; }
+    .card{ background:var(--card); border:1px solid #1f2937; border-radius:16px; padding:14px; margin:12px 0; }
+    label{ font-size:12px; color:var(--muted); display:block; margin-bottom:6px; }
+    textarea,input{ width:100%; background:#0b1220; color:var(--txt); border:1px solid #22304a; border-radius:12px; padding:10px 12px; outline:none; }
+    textarea{ min-height:110px; resize:vertical; }
+    .row{ display:flex; gap:10px; }
+    .row > div{ flex:1; }
+    .btn{ width:100%; padding:12px; border:0; border-radius:12px; background:var(--accent); color:white; font-weight:700; cursor:pointer; }
+    .btn.secondary{ background:#1f2937; }
+    .muted{ color:var(--muted); font-size:12px; }
+    .out{ white-space:pre-wrap; line-height:1.35; }
+    a{ color:#a78bfa; }
+  </style>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<header>
+  <h1>Creator_Kristina.ai — генерации (ApiFree)</h1>
+  <div class="muted" id="balance">Баланс: …</div>
+</header>
+
+<div class="wrap">
+  <div class="tabs">
+    <button class="tab active" data-tab="chat">💬 Chat</button>
+    <button class="tab" data-tab="image">🖼 Фото</button>
+    <button class="tab" data-tab="video">🎬 Видео</button>
+    <button class="tab" data-tab="ref">🎁 Рефералка</button>
+  </div>
+
+  <div class="card" id="panel-chat">
+    <label>Текст для ChatGPT</label>
+    <textarea id="chatText" placeholder="Напиши запрос..."></textarea>
+    <button class="btn" id="chatGo">Отправить</button>
+    <div class="card out" id="chatOut" style="display:none"></div>
+  </div>
+
+  <div class="card" id="panel-image" style="display:none">
+    <label>Промпт для изображения</label>
+    <textarea id="imgPrompt" placeholder="Опиши, что сгенерировать..."></textarea>
+    <button class="btn" id="imgGo">Сгенерировать</button>
+    <div class="muted" id="imgStatus"></div>
+    <div class="card out" id="imgOut" style="display:none"></div>
+  </div>
+
+  <div class="card" id="panel-video" style="display:none">
+    <label>Промпт для видео</label>
+    <textarea id="vidPrompt" placeholder="Опиши видео..."></textarea>
+    <div class="row">
+      <div><label>Длительность (сек)</label><input id="vidDuration" type="number" min="1" value="5"/></div>
+      <div><label>FPS</label><input id="vidFps" type="number" min="1" value="24"/></div>
+    </div>
+    <button class="btn" id="vidGo">Сгенерировать</button>
+    <div class="muted" id="vidStatus"></div>
+    <div class="card out" id="vidOut" style="display:none"></div>
+  </div>
+
+  <div class="card" id="panel-ref" style="display:none">
+    <div class="muted">Поделись ссылкой — получишь бесплатные генерации.</div>
+    <div class="card" style="margin-top:10px">
+      <div class="muted">Твоя ссылка:</div>
+      <div id="refLink" style="word-break:break-all"></div>
+      <div style="height:10px"></div>
+      <button class="btn" id="shareBtn">Поделиться</button>
+      <div style="height:8px"></div>
+      <button class="btn secondary" id="copyBtn">Скопировать</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready();
+
+function $(id){ return document.getElementById(id); }
+
+const state = { tg_id: null, bot_username: null };
+
+function setTab(name){
+  for (const el of document.querySelectorAll('.tab')) el.classList.toggle('active', el.dataset.tab===name);
+  for (const p of ['chat','image','video','ref']) $('panel-'+p).style.display = (p===name?'block':'none');
+}
+
+document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => setTab(btn.dataset.tab));
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(data.detail || data.error || ('HTTP '+r.status));
+  return data;
+}
+
+async function loadMe(){
+  // In real production you should verify initData on backend.
+  // For MVP we just use tg.initDataUnsafe.user.id
+  state.tg_id = tg?.initDataUnsafe?.user?.id || null;
+  state.bot_username = tg?.initDataUnsafe?.user?.username || null;
+
+  if (!state.tg_id){
+    $('balance').innerText = 'Открой внутри Telegram';
+    return;
+  }
+  const me = await api('/api/me?tg_id='+state.tg_id);
+  $('balance').innerText = `Баланс: Free ${me.credits_free} • PRO ${me.credits_pro}`;
+  // referral link
+  const bot = tg?.initDataUnsafe?.chat?.username || '';
+  const ref = `https://t.me/${bot || 'YOUR_BOT'}?start=ref_${state.tg_id}`;
+  $('refLink').innerText = ref;
+  state.refLink = ref;
+}
+
+$('chatGo').onclick = async () => {
+  $('chatOut').style.display='none';
+  try{
+    const text = $('chatText').value.trim();
+    const data = await api('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tg_id: state.tg_id, text})});
+    $('chatOut').innerText = data.answer;
+    $('chatOut').style.display='block';
+    await loadMe();
+  }catch(e){ alert(e.message); }
+};
+
+$('imgGo').onclick = async () => {
+  $('imgOut').style.display='none';
+  $('imgStatus').innerText = 'Отправляю...';
+  try{
+    const prompt = $('imgPrompt').value.trim();
+    const res = await api('/api/image/submit', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tg_id: state.tg_id, prompt})});
+    const request_id = res.apifree.request_id;
+    $('imgStatus').innerText = 'В очереди: '+request_id+' (жду результат...)';
+    // poll
+    for (let i=0;i<30;i++){
+      await new Promise(r=>setTimeout(r, 2000));
+      const out = await api('/api/image/result/'+request_id);
+      const st = out.apifree.status;
+      if (st === 'completed'){
+        const url = out.apifree.images?.[0]?.url;
+        $('imgOut').innerHTML = url ? `<a href="${url}" target="_blank">Открыть картинку</a>` : JSON.stringify(out.apifree,null,2);
+        $('imgOut').style.display='block';
+        $('imgStatus').innerText = 'Готово ✅';
+        break;
+      } else {
+        $('imgStatus').innerText = 'Статус: '+st+'...';
+      }
+    }
+    await loadMe();
+  }catch(e){ $('imgStatus').innerText='Ошибка'; alert(e.message); }
+};
+
+$('vidGo').onclick = async () => {
+  $('vidOut').style.display='none';
+  $('vidStatus').innerText = 'Отправляю...';
+  try{
+    const prompt = $('vidPrompt').value.trim();
+    const duration = parseInt($('vidDuration').value || '5');
+    const fps = parseInt($('vidFps').value || '24');
+    const res = await api('/api/video/submit', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tg_id: state.tg_id, prompt, duration, fps})});
+    const request_id = res.apifree.request_id;
+    $('vidStatus').innerText = 'В очереди: '+request_id+' (жду результат...)';
+    for (let i=0;i<60;i++){
+      await new Promise(r=>setTimeout(r, 3000));
+      const out = await api('/api/video/result/'+request_id);
+      const st = out.apifree.status;
+      if (st === 'completed'){
+        const url = out.apifree.videos?.[0]?.url || out.apifree.url;
+        $('vidOut').innerHTML = url ? `<a href="${url}" target="_blank">Открыть видео</a>` : JSON.stringify(out.apifree,null,2);
+        $('vidOut').style.display='block';
+        $('vidStatus').innerText = 'Готово ✅';
+        break;
+      } else {
+        $('vidStatus').innerText = 'Статус: '+st+'...';
+      }
+    }
+    await loadMe();
+  }catch(e){ $('vidStatus').innerText='Ошибка'; alert(e.message); }
+};
+
+$('shareBtn').onclick = () => {
+  if (!tg){ alert('Открой внутри Telegram'); return; }
+  tg.shareUrl(state.refLink, '🎁 Получи бесплатные генерации в Creator_Kristina.ai');
+};
+
+$('copyBtn').onclick = async () => {
+  try{ await navigator.clipboard.writeText(state.refLink); alert('Скопировано'); }
+  catch(e){ alert('Не удалось скопировать'); }
+};
+
+loadMe().catch(e => console.error(e));
+</script>
+</body>
+</html>
